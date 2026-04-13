@@ -6,6 +6,7 @@ import { createReactAgent } from "@langchain/langgraph/prebuilt";
 import { tool } from "@langchain/core/tools";
 import { z } from "zod";
 import { LangChainTracer } from "@langchain/core/tracers/tracer_langchain";
+import { octokit, parsePrUrl } from "./github.js";
 
 const tracer = new LangChainTracer({
   projectName: process.env.LANGSMITH_PROJECT || "mcp-review-agent",
@@ -67,31 +68,71 @@ function guardInjection(input: string): void {
 
 const getDiff = tool(
   async ({ pr_url }) => {
-    // TODO: Replace with actual GitHub API call
-    return `diff --git a/src/index.ts b/src/index.ts\n+console.log("debug")`;
+    const parsed = parsePrUrl(pr_url);
+    if (!parsed) throw new Error(`Invalid PR URL: ${pr_url}`);
+
+    // Get PR files changed
+    const { data: files } = await octokit.pulls.listFiles({
+      owner: parsed.owner,
+      repo: parsed.repo,
+      pull_number: parsed.pull_number,
+    });
+
+    if (files.length === 0) return "No files changed in this PR.";
+
+    // Get raw diff
+    const diffResponse = await octokit.pulls.get({
+      owner: parsed.owner,
+      repo: parsed.repo,
+      pull_number: parsed.pull_number,
+      mediaType: { format: "diff" },
+    });
+
+    const summary = files
+      .map((f) => `${f.status}: ${f.filename} (+${f.additions}/-${f.deletions})`)
+      .join("\n");
+
+    return `Files changed (${files.length}):\n${summary}\n\n--- DIFF ---\n\n${diffResponse.data}`;
   },
   {
     name: "get_diff",
-    description: "Get PR diff",
+    description: "Get the diff and changed files for a PR",
     schema: z.object({ pr_url: z.string() }),
   }
 );
 
 const postComment = tool(
   async ({ pr_url, body }) => {
-    // TODO: Replace with actual GitHub API call
+    const parsed = parsePrUrl(pr_url);
+    if (!parsed) throw new Error(`Invalid PR URL: ${pr_url}`);
+
     console.error(`[Agent] Posting comment to ${pr_url}: ${body}`);
-    return `Comment posted: ${body}`;
+
+    await octokit.issues.createComment({
+      owner: parsed.owner,
+      repo: parsed.repo,
+      issue_number: parsed.pull_number,
+      body,
+    });
+
+    return `Comment posted on ${pr_url}`;
   },
   {
     name: "post_comment",
-    description: "Post review comment",
+    description: "Post a review comment on a PR",
     schema: z.object({ pr_url: z.string(), body: z.string() }),
   }
 );
 
 async function runAgent(prUrl: string): Promise<void> {
   guardInjection(prUrl);
+
+  const parsed = parsePrUrl(prUrl);
+  if (!parsed) {
+    console.error(`Invalid PR URL format: ${prUrl}`);
+    console.error("Example: https://github.com/owner/repo/pull/123");
+    return;
+  }
 
   const llm = await createLLMWithFallback();
 
@@ -106,13 +147,17 @@ async function runAgent(prUrl: string): Promise<void> {
         messages: [
           {
             role: "user",
-            content: `Review this PR and leave comments: ${prUrl}`,
+            content: `Review PR: ${prUrl}\n\nPlease:
+1. Get the diff using get_diff tool
+2. Review the code changes for: correctness, security, code quality, and performance
+3. Post specific comments on the PR using post_comment tool
+4. Provide a summary of your findings`,
           },
         ],
       },
       {
         configurable: {
-          thread_id: `review-${Date.now()}`,
+          thread_id: `review-${parsed.owner}-${parsed.repo}-${parsed.pull_number}`,
         },
         callbacks: [tracer],
       }
@@ -123,5 +168,11 @@ async function runAgent(prUrl: string): Promise<void> {
 }
 
 // Main execution
-const PR_URL = process.env.PR_URL || "https://github.com/example/repo/pull/1";
+const PR_URL = process.env.PR_URL;
+if (!PR_URL) {
+  console.error("Usage: set PR_URL environment variable");
+  console.error("Example: set PR_URL=https://github.com/owner/repo/pull/123");
+  process.exit(1);
+}
+
 runAgent(PR_URL).catch(console.error);
