@@ -49,11 +49,27 @@ server.tool(
       .map((f) => `${f.status}: ${f.filename} (+${f.additions}/-${f.deletions})`)
       .join("\n");
 
+    // Truncate diff to stay under token limits
+    const MAX_DIFF_CHARS = 40000;
+    const fullDiff = String(diffResponse.data);
+    let diff = fullDiff;
+    let truncated = false;
+
+    if (diff.length > MAX_DIFF_CHARS) {
+      diff = diff.substring(0, MAX_DIFF_CHARS);
+      truncated = true;
+      const lastHunk = diff.lastIndexOf("\n@@");
+      if (lastHunk > MAX_DIFF_CHARS * 0.8) {
+        diff = diff.substring(0, lastHunk);
+      }
+      diff += `\n\n[... diff truncated ...]`;
+    }
+
     return {
       content: [
         {
           type: "text",
-          text: `Files changed (${files.length}):\n${summary}\n\n--- DIFF ---\n\n${String(diffResponse.data)}`,
+          text: `Files changed (${files.length}):\n${summary}\n${truncated ? "(Diff truncated)\n" : ""}\n--- DIFF ---\n\n${diff}`,
         },
       ],
     };

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { ToolAbuseDetector, ToolCallRecord } from "../src/tool-abuse";
+import { ToolAbuseDetector, type ToolCallRecord } from "../src/tool-abuse.js";
 
 describe("Tool Abuse Detection", () => {
   let detector: ToolAbuseDetector;

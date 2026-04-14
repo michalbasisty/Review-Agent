@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { DeadLetterQueue, DLQEntry } from "../src/dlq";
+import { DeadLetterQueue, type DLQEntry } from "../src/dlq.js";
 import * as fs from "fs";
 import * as path from "path";
 
@@ -66,7 +66,7 @@ describe("Dead Letter Queue (DLQ)", () => {
     const entries = dlq.readAll();
     expect(entries.length).toBe(2);
     // Order may vary due to filesystem, so check both exist
-    const errors = entries.map((e) => e.error);
+    const errors = entries.map((e: DLQEntry) => e.error);
     expect(errors).toContain("Error 1");
     expect(errors).toContain("Error 2");
   });

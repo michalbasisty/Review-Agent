@@ -1,6 +1,6 @@
 import "dotenv/config";
+import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
 import { ChatGroq } from "@langchain/groq";
-import { ChatOllama } from "@langchain/ollama";
 import { BaseChatModel } from "@langchain/core/language_models/chat_models";
 import { createReactAgent } from "@langchain/langgraph/prebuilt";
 import { tool } from "@langchain/core/tools";
@@ -35,26 +35,26 @@ async function retryWithBackoff<T>(
 
 // --- LLM with fallback ---
 async function createLLMWithFallback(): Promise<BaseChatModel> {
-  // Primary: Groq (fast, free tier)
+  // Primary: Gemini (free tier, generous limits)
+  const gemini = new ChatGoogleGenerativeAI({
+    model: "gemini-2.5-flash",
+    temperature: 0.2,
+  });
+
+  // Fallback: Groq
   const groq = new ChatGroq({
     model: "llama-3.3-70b-versatile",
     temperature: 0.2,
   });
 
-  // Fallback: Ollama (local, always available)
-  const ollama = new ChatOllama({
-    model: "llama3.1",
-    temperature: 0.2,
-  });
-
   try {
-    // Test Groq with a simple call
-    await groq.invoke([{ role: "user", content: "test" }]);
-    console.error("[LLM] Using Groq (primary)");
-    return groq;
+    // Test Gemini with a simple call
+    await gemini.invoke([{ role: "user", content: "test" }]);
+    console.error("[LLM] Using Gemini (primary)");
+    return gemini;
   } catch (error: any) {
-    console.error(`[LLM] Groq failed (${error.message}), falling back to Ollama`);
-    return ollama;
+    console.error(`[LLM] Gemini failed (${error.message}), falling back to Groq`);
+    return groq;
   }
 }
 
@@ -80,6 +80,11 @@ const getDiff = tool(
 
     if (files.length === 0) return "No files changed in this PR.";
 
+    // Summary of all files (small)
+    const summary = files
+      .map((f) => `${f.status}: ${f.filename} (+${f.additions}/-${f.deletions})`)
+      .join("\n");
+
     // Get raw diff
     const diffResponse = await octokit.pulls.get({
       owner: parsed.owner,
@@ -88,11 +93,28 @@ const getDiff = tool(
       mediaType: { format: "diff" },
     });
 
-    const summary = files
-      .map((f) => `${f.status}: ${f.filename} (+${f.additions}/-${f.deletions})`)
-      .join("\n");
+    const fullDiff = String(diffResponse.data);
 
-    return `Files changed (${files.length}):\n${summary}\n\n--- DIFF ---\n\n${diffResponse.data}`;
+    // Truncate diff to ~8K tokens (stays well under 12K limit with prompt overhead)
+    const MAX_DIFF_CHARS = 40000; // ~10K tokens
+    let diff = fullDiff;
+    let truncated = false;
+
+    if (diff.length > MAX_DIFF_CHARS) {
+      diff = diff.substring(0, MAX_DIFF_CHARS);
+      truncated = true;
+
+      // Find last complete hunk boundary
+      const lastHunk = diff.lastIndexOf("\n@@");
+      if (lastHunk > MAX_DIFF_CHARS * 0.8) {
+        diff = diff.substring(0, lastHunk);
+      }
+
+      // Add truncation note
+      diff += `\n\n[... diff truncated, ${fullDiff.length - diff.length} more characters omitted ...]`;
+    }
+
+    return `Files changed (${files.length}):\n${summary}\n${truncated ? `(Diff truncated to first ${MAX_DIFF_CHARS} chars)\n` : ""}\n--- DIFF ---\n\n${diff}`;
   },
   {
     name: "get_diff",
@@ -141,27 +163,26 @@ async function runAgent(prUrl: string): Promise<void> {
     tools: [getDiff, postComment],
   });
 
-  const result = await retryWithBackoff(async () =>
-    agent.invoke(
-      {
-        messages: [
-          {
-            role: "user",
-            content: `Review PR: ${prUrl}\n\nPlease:
-1. Get the diff using get_diff tool
-2. Review the code changes for: correctness, security, code quality, and performance
-3. Post specific comments on the PR using post_comment tool
-4. Provide a summary of your findings`,
-          },
-        ],
-      },
-      {
-        configurable: {
-          thread_id: `review-${parsed.owner}-${parsed.repo}-${parsed.pull_number}`,
+  const result = await retryWithBackoff(
+    async () =>
+      agent.invoke(
+        {
+          messages: [
+            {
+              role: "user",
+              content: `Review this PR: ${prUrl}\n\n1. Get diff with get_diff\n2. Review for: correctness, security, quality, performance\n3. Post comments with post_comment\n4. Summarize findings`,
+            },
+          ],
         },
-        callbacks: [tracer],
-      }
-    )
+        {
+          configurable: {
+            thread_id: `review-${parsed.owner}-${parsed.repo}-${parsed.pull_number}`,
+          },
+          callbacks: [tracer],
+        }
+      ),
+    2, // max 2 attempts
+    2000 // 2s base delay
   );
 
   console.log(result.messages.at(-1)?.content);

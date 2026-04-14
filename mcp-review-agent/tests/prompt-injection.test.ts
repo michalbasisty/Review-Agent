@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { guardInjection } from "../src/security";
+import { guardInjection } from "../src/security.js";
 
 describe("Prompt Injection Tests", () => {
   describe("Direct prompt injection", () => {
