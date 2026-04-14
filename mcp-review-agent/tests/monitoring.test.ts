@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { Monitor, Alert, AlertLevel } from "../src/monitor";
+import { Monitor, type Alert, type AlertLevel } from "../src/monitor.js";
 
 describe("Production Monitoring & Alerts", () => {
   let monitor: Monitor;
@@ -7,7 +7,7 @@ describe("Production Monitoring & Alerts", () => {
 
   beforeEach(() => {
     monitor = new Monitor({
-      onAlert: (alert) => alerts.push(alert),
+      onAlert: (alert: Alert) => alerts.push(alert),
       errorRateThreshold: 0.1, // 10%
       latencyThresholdMs: 5000, // 5s
     });

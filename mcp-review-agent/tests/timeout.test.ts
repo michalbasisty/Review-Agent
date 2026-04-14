@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { retryWithBackoff } from "../src/retry";
+import { retryWithBackoff } from "../src/retry.js";
 
 describe("Timeout Handling Tests", () => {
   beforeEach(() => {
